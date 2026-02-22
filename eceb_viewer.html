@@ -1,0 +1,572 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ECEB Building Viewer</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { overflow: hidden; background: #1a1a2e; font-family: 'Segoe UI', sans-serif; }
+    #canvas-container { width: 100vw; height: 100vh; }
+
+    #loading-overlay {
+      position: fixed; inset: 0; background: #1a1a2e;
+      display: flex; flex-direction: column; align-items: center; justify-content: center;
+      z-index: 100; color: #e0e0ff;
+    }
+    #loading-overlay h2 { font-size: 1.6rem; margin-bottom: 20px; letter-spacing: 2px; }
+    #progress-bar-outer {
+      width: 360px; height: 14px; background: #2a2a4e; border-radius: 7px; overflow: hidden;
+    }
+    #progress-bar-inner {
+      height: 100%; width: 0%; background: linear-gradient(90deg, #4472C4, #00B0F0);
+      border-radius: 7px; transition: width 0.3s;
+    }
+    #loading-status { margin-top: 14px; font-size: 0.9rem; color: #8888bb; }
+
+    #title {
+      position: fixed; top: 16px; left: 20px; color: #e0e8ff;
+      font-size: 1.1rem; font-weight: 600; letter-spacing: 1px;
+      text-shadow: 0 2px 8px #000a;
+      pointer-events: none;
+    }
+    #subtitle {
+      position: fixed; top: 40px; left: 20px; color: #8888bb;
+      font-size: 0.75rem; pointer-events: none;
+    }
+
+    #legend {
+      position: fixed; bottom: 20px; left: 20px;
+      background: rgba(10,10,30,0.82); border: 1px solid #33336a;
+      border-radius: 10px; padding: 14px 18px;
+      color: #dde; font-size: 0.82rem;
+    }
+    #legend h3 { margin-bottom: 10px; font-size: 0.85rem; letter-spacing: 1px; color: #aac; }
+    .legend-item { display: flex; align-items: center; gap: 9px; margin-bottom: 7px; }
+    .legend-swatch { width: 18px; height: 18px; border-radius: 4px; flex-shrink: 0; }
+
+    #floor-controls {
+      position: fixed; top: 16px; right: 20px;
+      background: rgba(10,10,30,0.82); border: 1px solid #33336a;
+      border-radius: 10px; padding: 14px 18px;
+      color: #dde; font-size: 0.82rem;
+    }
+    #floor-controls h3 { margin-bottom: 10px; font-size: 0.85rem; letter-spacing: 1px; color: #aac; }
+    .floor-item { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; cursor: pointer; }
+    .floor-item input { cursor: pointer; accent-color: #4472C4; }
+    .floor-item label { cursor: pointer; }
+
+    #hint {
+      position: fixed; bottom: 20px; right: 20px;
+      color: #666699; font-size: 0.72rem; text-align: right;
+      pointer-events: none;
+    }
+  </style>
+</head>
+<body>
+
+<div id="loading-overlay">
+  <h2>ECEB Building Viewer</h2>
+  <div id="progress-bar-outer"><div id="progress-bar-inner"></div></div>
+  <div id="loading-status">Initializing...</div>
+</div>
+
+<div id="canvas-container"></div>
+
+<div id="title">ECEB Building Viewer</div>
+<div id="subtitle">Electrical &amp; Computer Engineering Building — UIUC</div>
+
+<div id="legend">
+  <h3>ROOM TYPES</h3>
+  <div class="legend-item"><div class="legend-swatch" style="background:#002060"></div>Admin</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#4472C4"></div>Classroom</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#00B0F0"></div>Circulation</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#E48F24"></div>Lab</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#70AD47"></div>Office</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#FF66CC"></div>Student Space</div>
+  <div class="legend-item"><div class="legend-swatch" style="background:#B0B8C0"></div>General / Corridor</div>
+</div>
+
+<div id="floor-controls">
+  <h3>FLOORS</h3>
+  <div id="floor-checkboxes"></div>
+</div>
+
+<div id="hint">Drag to orbit · Scroll to zoom · Right-drag to pan</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+  }
+}
+</script>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+
+// ─── Config ────────────────────────────────────────────────────────────────
+const PDF_URL   = './eceb_map_2014.pdf';
+const SCALE     = 2.0;
+const CELL_SIZE = 4;
+const VOXEL_H   = 2.5;
+const FLOOR_GAP = 16;
+const VOTE_THR  = 0.40;
+const SAMPLE_OFFSETS = [0, 2, 4]; // 3×3 sub-sample within cell
+
+// ─── Floor regions: crop coordinates at scale=2 ────────────────────────────
+const FLOOR_REGIONS = [
+  { page: 1, x: 50,  y: 280, w: 720, h: 680, label: 'Level 01' },  // Floor 1 left
+  { page: 1, x: 800, y: 280, w: 720, h: 680, label: 'Level 02' },  // Floor 2 right
+  { page: 2, x: 30,  y: 460, w: 770, h: 620, label: 'Level 03' },  // Floor 3 bottom-left
+  { page: 2, x: 790, y: 460, w: 770, h: 620, label: 'Level 04' },  // Floor 4 bottom-right
+  { page: 2, x: 360, y: 60,  w: 600, h: 420, label: 'Level 05' },  // Floor 5 top-center
+];
+
+// ─── Room types (widened ranges to catch PDF-rendered colors) ──────────────
+const ROOM_TYPES = {
+  ADMIN:       { color: 0x002060, hue:[200,250], sat:[0.50,1.00], lit:[0.05,0.35] },
+  CLASSROOM:   { color: 0x4472C4, hue:[200,250], sat:[0.30,1.00], lit:[0.35,0.75] },
+  CIRCULATION: { color: 0x00B0F0, hue:[175,215], sat:[0.50,1.00], lit:[0.35,0.80] },
+  LAB:         { color: 0xE48F24, hue:[10, 50],  sat:[0.50,1.00], lit:[0.35,0.80] },
+  OFFICE:      { color: 0x70AD47, hue:[70, 150],  sat:[0.20,1.00], lit:[0.25,0.70] },
+  STUDENT:     { color: 0xFF66CC, hue:[285,355], sat:[0.40,1.00], lit:[0.40,0.90] },
+  GRAY:        { color: 0xB0B8C0 },
+};
+// Check ADMIN before CLASSROOM (both overlap in hue, admin is darker)
+// GRAY is handled specially in classifyPixel, not via HSL ranges
+const ROOM_KEYS = ['ADMIN','CLASSROOM','CIRCULATION','LAB','OFFICE','STUDENT','GRAY'];
+
+// ─── HSL helpers ───────────────────────────────────────────────────────────
+function rgbToHsl(r, g, b) {
+  r /= 255; g /= 255; b /= 255;
+  const max = Math.max(r,g,b), min = Math.min(r,g,b);
+  let h, s, l = (max+min)/2;
+  if (max === min) { h = s = 0; }
+  else {
+    const d = max - min;
+    s = l > 0.5 ? d/(2-max-min) : d/(max+min);
+    switch(max) {
+      case r: h = ((g-b)/d + (g<b?6:0))/6; break;
+      case g: h = ((b-r)/d + 2)/6; break;
+      case b: h = ((r-g)/d + 4)/6; break;
+    }
+    h *= 360;
+  }
+  return [h, s, l];
+}
+
+function classifyPixel(r, g, b) {
+  const [h, s, l] = rgbToHsl(r, g, b);
+  if (l > 0.92) return null;    // white / background
+  // Only truly black/very dark lines are walls
+  if (l < 0.12) return 'WALL';
+  if (l < 0.20 && s < 0.15) return 'WALL';
+
+  // Try matching room colors first (skip GRAY — handled below)
+  for (const key of ROOM_KEYS) {
+    const rt = ROOM_TYPES[key];
+    if (!rt.hue) continue;
+    const [h0,h1] = rt.hue, [s0,s1] = rt.sat, [l0,l1] = rt.lit;
+    const hMatch = h0 <= h1 ? (h >= h0 && h <= h1) : (h >= h0 || h <= h1);
+    if (hMatch && s >= s0 && s <= s1 && l >= l0 && l <= l1) return key;
+  }
+
+  // Gray fills (corridors, storage, misc rooms) — medium lightness, low saturation
+  if (s < 0.15 && l >= 0.20 && l <= 0.85) return 'GRAY';
+
+  return null;
+}
+
+// ─── Floor processing ──────────────────────────────────────────────────────
+function processFloor(imageData, imgW, imgH) {
+  const GRID_W = Math.floor(imgW / CELL_SIZE);
+  const GRID_H = Math.floor(imgH / CELL_SIZE);
+  const grid = [];
+
+  for (let gy = 0; gy < GRID_H; gy++) {
+    const row = [];
+    for (let gx = 0; gx < GRID_W; gx++) {
+      const votes = {};
+      let totalSamples = 0;
+      for (const dy of SAMPLE_OFFSETS) {
+        for (const dx of SAMPLE_OFFSETS) {
+          const px = gx * CELL_SIZE + dx;
+          const py = gy * CELL_SIZE + dy;
+          if (px >= imgW || py >= imgH) continue;
+          const idx = (py * imgW + px) * 4;
+          const rr = imageData[idx], gg = imageData[idx+1], bb = imageData[idx+2];
+          const type = classifyPixel(rr, gg, bb);
+          totalSamples++;
+          if (type !== null) {
+            votes[type] = (votes[type] || 0) + 1;
+          }
+        }
+      }
+      if (Object.keys(votes).length === 0) { row.push(null); continue; }
+      let bestType = null, bestCount = 0;
+      for (const [t, c] of Object.entries(votes)) {
+        if (c > bestCount) { bestCount = c; bestType = t; }
+      }
+      row.push(bestCount / totalSamples > VOTE_THR ? bestType : null);
+    }
+    grid.push(row);
+  }
+  // Post-process: remove interior walls (furniture/seats/tables).
+  // A WALL cell is structural only if it borders empty space (null)
+  // or separates two different room types. Otherwise it's furniture.
+  const cleaned = grid.map(row => [...row]);
+  for (let gy = 0; gy < GRID_H; gy++) {
+    for (let gx = 0; gx < GRID_W; gx++) {
+      if (grid[gy][gx] !== 'WALL') continue;
+      let hasNull = false;
+      const neighborRooms = new Set();
+      for (let dy = -1; dy <= 1; dy++) {
+        for (let dx = -1; dx <= 1; dx++) {
+          if (dx === 0 && dy === 0) continue;
+          const ny = gy + dy, nx = gx + dx;
+          if (ny < 0 || ny >= GRID_H || nx < 0 || nx >= GRID_W) { hasNull = true; continue; }
+          const n = grid[ny][nx];
+          if (n === null) hasNull = true;
+          else if (n !== 'WALL') neighborRooms.add(n);
+        }
+      }
+      // Keep wall if it borders empty space or separates 2+ different room types
+      if (!hasNull && neighborRooms.size < 2) {
+        // Interior detail — replace with the surrounding room type if any
+        cleaned[gy][gx] = neighborRooms.size === 1 ? [...neighborRooms][0] : null;
+      }
+    }
+  }
+
+  // Add building outline: any non-null cell that borders null gets an OUTLINE neighbor
+  const final = cleaned.map(row => [...row]);
+  for (let gy = 0; gy < GRID_H; gy++) {
+    for (let gx = 0; gx < GRID_W; gx++) {
+      if (cleaned[gy][gx] !== null) continue; // only fill null cells
+      // Check if any 4-neighbor is a non-null, non-WALL cell
+      let bordering = false;
+      for (const [dy, dx] of [[-1,0],[1,0],[0,-1],[0,1]]) {
+        const ny = gy + dy, nx = gx + dx;
+        if (ny < 0 || ny >= GRID_H || nx < 0 || nx >= GRID_W) continue;
+        const n = cleaned[ny][nx];
+        if (n !== null && n !== 'WALL') { bordering = true; break; }
+      }
+      if (bordering) final[gy][gx] = 'OUTLINE';
+    }
+  }
+
+  return { grid: final, GRID_W, GRID_H };
+}
+
+// ─── Progress helpers ──────────────────────────────────────────────────────
+const progressBar = document.getElementById('progress-bar-inner');
+const statusEl    = document.getElementById('loading-status');
+function setProgress(pct, msg) {
+  progressBar.style.width = pct + '%';
+  statusEl.textContent = msg;
+}
+
+// ─── Main ──────────────────────────────────────────────────────────────────
+async function main() {
+  // Load PDF.js
+  await loadScript('https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js');
+  pdfjsLib.GlobalWorkerOptions.workerSrc =
+    'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  setProgress(5, 'Loading PDF…');
+  let pdfDoc;
+  try {
+    pdfDoc = await pdfjsLib.getDocument(PDF_URL).promise;
+  } catch(e) {
+    statusEl.textContent = 'Error loading PDF: ' + e.message;
+    return;
+  }
+
+  // Render PDF pages to canvases (we only need pages 1 and 2)
+  const pageCanvases = {};
+  for (let i = 1; i <= Math.min(pdfDoc.numPages, 2); i++) {
+    setProgress(5 + (i-1) * 15, `Rendering PDF page ${i}…`);
+    const page = await pdfDoc.getPage(i);
+    const viewport = page.getViewport({ scale: SCALE });
+    const offCanvas = document.createElement('canvas');
+    offCanvas.width  = Math.round(viewport.width);
+    offCanvas.height = Math.round(viewport.height);
+    const ctx = offCanvas.getContext('2d');
+    await page.render({ canvasContext: ctx, viewport }).promise;
+    pageCanvases[i] = { canvas: offCanvas, ctx };
+  }
+
+  // Extract floor regions
+  const floors = [];
+  for (let fi = 0; fi < FLOOR_REGIONS.length; fi++) {
+    const region = FLOOR_REGIONS[fi];
+    setProgress(35 + fi * 10, `Processing ${region.label}…`);
+    const { canvas, ctx } = pageCanvases[region.page];
+
+    // Clamp region to actual canvas bounds
+    const rx = Math.max(0, Math.min(region.x, canvas.width));
+    const ry = Math.max(0, Math.min(region.y, canvas.height));
+    const rw = Math.min(region.w, canvas.width - rx);
+    const rh = Math.min(region.h, canvas.height - ry);
+
+    const imgData = ctx.getImageData(rx, ry, rw, rh);
+    const result = processFloor(imgData.data, rw, rh);
+    result.label = region.label;
+    floors.push(result);
+  }
+
+  setProgress(85, 'Building 3D scene…');
+  await buildScene(floors);
+  setProgress(100, 'Done!');
+
+  await new Promise(r => setTimeout(r, 400));
+  document.getElementById('loading-overlay').style.display = 'none';
+}
+
+function loadScript(src) {
+  return new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = reject;
+    document.head.appendChild(s);
+  });
+}
+
+// ─── Build Three.js Scene ──────────────────────────────────────────────────
+async function buildScene(floors) {
+  // Renderer
+  const renderer = new THREE.WebGLRenderer({ antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+  renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.shadowMap.enabled = false;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 1.1;
+  document.getElementById('canvas-container').appendChild(renderer.domElement);
+
+  // Scene
+  const scene = new THREE.Scene();
+  scene.background = new THREE.Color(0x1a1a2e);
+  scene.fog = new THREE.Fog(0x1a1a2e, 800, 2000);
+
+  // Lights — brighter so walls and rooms pop
+  scene.add(new THREE.AmbientLight(0xffffff, 0.8));
+  const sun = new THREE.DirectionalLight(0xfff4e0, 1.2);
+  sun.position.set(200, 400, 150);
+  scene.add(sun);
+  const fill = new THREE.DirectionalLight(0xb0c8ff, 0.4);
+  fill.position.set(-200, 100, -150);
+  scene.add(fill);
+  const back = new THREE.DirectionalLight(0xffffff, 0.3);
+  back.position.set(0, 200, -300);
+  scene.add(back);
+
+  // Use max GRID_W/GRID_H across floors as reference
+  let maxGW = 0, maxGH = 0;
+  for (const f of floors) {
+    if (f.GRID_W > maxGW) maxGW = f.GRID_W;
+    if (f.GRID_H > maxGH) maxGH = f.GRID_H;
+  }
+
+  // Geometries
+  const wallGeo    = new THREE.BoxGeometry(1, VOXEL_H, 1);
+  const outlineGeo = new THREE.BoxGeometry(1, VOXEL_H, 1);  // building perimeter
+  const floorGeo   = new THREE.BoxGeometry(1, 0.5, 1);      // thin floor tile for rooms
+  const dummy      = new THREE.Object3D();
+
+  // Materials
+  const wallMat = new THREE.MeshPhysicalMaterial({
+    color: 0xc0d0e0, transparent: true, opacity: 0.45,
+    roughness: 0.6, metalness: 0.1,
+  });
+  const outlineMat = new THREE.MeshPhysicalMaterial({
+    color: 0xd0d8e8, transparent: true, opacity: 0.55,
+    roughness: 0.4, metalness: 0.15,
+  });
+
+  const roomMats = {};
+  for (const key of ROOM_KEYS) {
+    roomMats[key] = new THREE.MeshPhysicalMaterial({
+      color: ROOM_TYPES[key].color, transparent: true, opacity: 0.65,
+      roughness: 0.5, metalness: 0.0,
+    });
+  }
+
+  // Count instances per type per floor
+  const ALL_TYPES = ['WALL', 'OUTLINE', ...ROOM_KEYS];
+  const counts = {};
+  for (let fi = 0; fi < floors.length; fi++) {
+    const { grid } = floors[fi];
+    for (const t of ALL_TYPES) counts[`${t}_${fi}`] = 0;
+    for (let gy = 0; gy < grid.length; gy++)
+      for (let gx = 0; gx < grid[gy].length; gx++) {
+        const t = grid[gy][gx];
+        if (t) counts[`${t}_${fi}`]++;
+      }
+  }
+
+  // Build instanced meshes
+  const meshGroups = []; // [{floorIdx, meshes:[]}]
+
+  for (let fi = 0; fi < floors.length; fi++) {
+    const { grid, GRID_W, GRID_H } = floors[fi];
+    const floorMeshes = [];
+
+    // Wall mesh (interior structural walls)
+    const wallCount = counts[`WALL_${fi}`];
+    if (wallCount > 0) {
+      const mesh = new THREE.InstancedMesh(wallGeo, wallMat, wallCount);
+      mesh.userData = { floorIdx: fi, roomType: 'WALL' };
+      scene.add(mesh);
+      floorMeshes.push({ key: 'WALL', mesh, idx: 0 });
+    }
+
+    // Outline mesh (building perimeter)
+    const outlineCount = counts[`OUTLINE_${fi}`];
+    if (outlineCount > 0) {
+      const mesh = new THREE.InstancedMesh(outlineGeo, outlineMat, outlineCount);
+      mesh.userData = { floorIdx: fi, roomType: 'OUTLINE' };
+      scene.add(mesh);
+      floorMeshes.push({ key: 'OUTLINE', mesh, idx: 0 });
+    }
+
+    // Room meshes (thin floor tiles)
+    for (const key of ROOM_KEYS) {
+      const cnt = counts[`${key}_${fi}`];
+      if (cnt === 0) continue;
+      const mesh = new THREE.InstancedMesh(floorGeo, roomMats[key], cnt);
+      mesh.userData = { floorIdx: fi, roomType: key };
+      scene.add(mesh);
+      floorMeshes.push({ key, mesh, idx: 0 });
+    }
+
+    const yBaseWall = fi * FLOOR_GAP + VOXEL_H / 2;
+    const yBaseFloor = fi * FLOOR_GAP + 0.2;  // thin tiles sit at floor level
+
+    // Center each floor in the scene
+    const offsetX = (maxGW - GRID_W) / 2;
+    const offsetZ = (maxGH - GRID_H) / 2;
+
+    for (let gy = 0; gy < grid.length; gy++) {
+      for (let gx = 0; gx < grid[gy].length; gx++) {
+        const t = grid[gy][gx];
+        if (!t) continue;
+        const fm = floorMeshes.find(f => f.key === t);
+        if (!fm) continue;
+
+        const posX = (GRID_W - gx - 1) + offsetX + 0.5;
+        const posZ = maxGH - (gy + offsetZ) - 0.5;
+
+        if (t === 'WALL' || t === 'OUTLINE') {
+          dummy.position.set(posX, yBaseWall, posZ);
+        } else {
+          dummy.position.set(posX, yBaseFloor, posZ);
+        }
+        dummy.updateMatrix();
+        fm.mesh.setMatrixAt(fm.idx++, dummy.matrix);
+      }
+    }
+    for (const fm of floorMeshes) fm.mesh.instanceMatrix.needsUpdate = true;
+
+    // Add a subtle floor slab for this level
+    const slabGeo = new THREE.BoxGeometry(GRID_W, 0.12, GRID_H);
+    const slabMat = new THREE.MeshPhysicalMaterial({
+      color: 0x8899aa, transparent: true, opacity: 0.12,
+      roughness: 0.8, metalness: 0.0,
+    });
+    const slab = new THREE.Mesh(slabGeo, slabMat);
+    slab.position.set(GRID_W / 2 + offsetX, fi * FLOOR_GAP, GRID_H / 2 + offsetZ);
+    slab.userData = { floorIdx: fi };
+    scene.add(slab);
+
+    meshGroups.push({
+      floorIdx: fi,
+      meshes: [...floorMeshes.map(f => f.mesh), slab]
+    });
+  }
+
+  // Floor label sprites
+  for (let fi = 0; fi < floors.length; fi++) {
+    const sprite = makeTextSprite(floors[fi].label, '#aaccff', '#0008');
+    sprite.position.set(-18, fi * FLOOR_GAP + VOXEL_H / 2, maxGH / 2);
+    sprite.scale.set(30, 10, 1);
+    sprite.userData = { floorIdx: fi };
+    scene.add(sprite);
+    meshGroups[fi].meshes.push(sprite);
+  }
+
+  // Camera
+  const cx = maxGW / 2, cy = (floors.length - 1) * FLOOR_GAP / 2, cz = maxGH / 2;
+  const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 1, 3000);
+  camera.position.set(cx + 220, cy + 160, cz + 250);
+
+  const controls = new OrbitControls(camera, renderer.domElement);
+  controls.target.set(cx, cy, cz);
+  controls.enableDamping = true;
+  controls.dampingFactor = 0.06;
+  controls.minDistance = 30;
+  controls.maxDistance = 1200;
+  controls.update();
+
+  // Floor checkbox UI
+  const cbContainer = document.getElementById('floor-checkboxes');
+  for (let fi = 0; fi < floors.length; fi++) {
+    const item  = document.createElement('div');
+    item.className = 'floor-item';
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true; cb.id = `fl${fi}`;
+    const lbl = document.createElement('label');
+    lbl.htmlFor = `fl${fi}`;
+    lbl.textContent = floors[fi].label;
+    item.appendChild(cb); item.appendChild(lbl);
+    cbContainer.appendChild(item);
+
+    const group = meshGroups[fi];
+    cb.addEventListener('change', () => {
+      if (group) group.meshes.forEach(m => m.visible = cb.checked);
+    });
+  }
+
+  // Resize handler
+  window.addEventListener('resize', () => {
+    camera.aspect = window.innerWidth / window.innerHeight;
+    camera.updateProjectionMatrix();
+    renderer.setSize(window.innerWidth, window.innerHeight);
+  });
+
+  // Animation loop
+  function animate() {
+    requestAnimationFrame(animate);
+    controls.update();
+    renderer.render(scene, camera);
+  }
+  animate();
+}
+
+// ─── Text sprite helper ────────────────────────────────────────────────────
+function makeTextSprite(text, textColor, bgColor) {
+  const c = document.createElement('canvas');
+  c.width = 256; c.height = 64;
+  const ctx = c.getContext('2d');
+  ctx.fillStyle = bgColor;
+  ctx.roundRect(0, 0, 256, 64, 10);
+  ctx.fill();
+  ctx.fillStyle = textColor;
+  ctx.font = 'bold 28px Segoe UI, sans-serif';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 128, 32);
+  const tex = new THREE.CanvasTexture(c);
+  const mat = new THREE.SpriteMaterial({ map: tex, depthTest: false });
+  return new THREE.Sprite(mat);
+}
+
+// ─── Kick off ──────────────────────────────────────────────────────────────
+main().catch(err => {
+  console.error(err);
+  document.getElementById('loading-status').textContent = 'Fatal error: ' + err.message;
+});
+</script>
+</body>
+</html>

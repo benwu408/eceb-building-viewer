@@ -1,0 +1,65 @@
+@import "tailwindcss";
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  overflow: hidden;
+  background: #1a1a2e;
+  font-family: "Segoe UI", sans-serif;
+}
+
+#canvas-container {
+  width: 100vw;
+  height: 100vh;
+}
+
+.overlay-panel {
+  background: rgba(10, 10, 30, 0.82);
+  border: 1px solid #33336a;
+  border-radius: 10px;
+  padding: 14px 18px;
+  color: #dde;
+  font-size: 0.82rem;
+}
+
+.overlay-panel h3 {
+  margin-bottom: 10px;
+  font-size: 0.85rem;
+  letter-spacing: 1px;
+  color: #aac;
+}
+
+.legend-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  margin-bottom: 7px;
+}
+
+.legend-swatch {
+  width: 18px;
+  height: 18px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
+.floor-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+  cursor: pointer;
+}
+
+.floor-item input {
+  cursor: pointer;
+  accent-color: #4472c4;
+}
+
+.floor-item label {
+  cursor: pointer;
+}
