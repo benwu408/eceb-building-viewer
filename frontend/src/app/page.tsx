@@ -21,7 +21,7 @@ export default function Home() {
   const [visibleFloors, setVisibleFloors] = useState<boolean[]>([]);
 
   useEffect(() => {
-    fetch("/api/floors")
+    fetch("/floors.json")
       .then((r) => r.json())
       .then((json: ApiResponse) => {
         setData(json);
