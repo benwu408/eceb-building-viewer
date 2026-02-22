@@ -8,7 +8,6 @@ import signal
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(ROOT, "backend")
-FRONTEND_DIR = os.path.join(ROOT, "frontend")
 
 procs: list[subprocess.Popen] = []
 
@@ -32,9 +31,9 @@ def run():
                    cwd=BACKEND_DIR, check=True)
 
     # 2. Install frontend deps if needed
-    if not os.path.isdir(os.path.join(FRONTEND_DIR, "node_modules")):
+    if not os.path.isdir(os.path.join(ROOT, "node_modules")):
         print("==> Installing frontend dependencies...")
-        subprocess.run(["npm", "install"], cwd=FRONTEND_DIR, check=True)
+        subprocess.run(["npm", "install"], cwd=ROOT, check=True)
 
     # 3. Start backend
     print("==> Starting backend on http://localhost:8000")
@@ -48,7 +47,7 @@ def run():
     print("==> Starting frontend on http://localhost:3000")
     frontend = subprocess.Popen(
         ["npm", "run", "dev"],
-        cwd=FRONTEND_DIR,
+        cwd=ROOT,
     )
     procs.append(frontend)
 

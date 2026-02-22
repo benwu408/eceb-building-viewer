@@ -7,7 +7,7 @@ from pdf_processor import load_and_process_pdf, ROOM_TYPES
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 PDF_PATH = os.path.join(ROOT, "..", "eceb_map_2014.pdf")
-OUT_PATH = os.path.join(ROOT, "..", "frontend", "public", "floors.json")
+OUT_PATH = os.path.join(ROOT, "..", "public", "floors.json")
 
 floors = load_and_process_pdf(PDF_PATH)
 
